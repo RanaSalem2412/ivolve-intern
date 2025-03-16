@@ -1,0 +1,106 @@
+pipeline {
+    agent any
+    environment {
+        DOCKER_CREDENTIALS_ID = 'docker-hub'   // معرف Docker Hub في Jenkins
+        IMAGE_NAME = 'ranasalem2412/rana_image' // اسم الصورة في Docker Hub
+        DEPLOYMENT_FILE = 'deployment.yaml'    // اسم ملف الـ Deployment
+        KUBECONFIG_PATH = '/home/ec2-user/kubeconfig.yaml' // مسار kubeconfig
+    }
+    stages {
+        stage('Clone Repository') {
+            steps {
+                git branch: 'main', url: 'https://github.com/IbrahimAdell/App1.git'
+            }
+        }
+        
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    def IMAGE_TAG = "${IMAGE_NAME}:${BUILD_NUMBER}"
+                    sh "docker build -t ${IMAGE_TAG} ."
+                }
+            }
+        }
+
+        stage('Login to Docker Hub') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: DOCKER_CREDENTIALS_ID, usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    sh """
+                        echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+                    """
+                }
+            }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                script {
+                    def IMAGE_TAG = "${IMAGE_NAME}:${BUILD_NUMBER}"
+                    sh "docker push ${IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('Clean Up Local Images') {
+            steps {
+                script {
+                    def IMAGE_TAG = "${IMAGE_NAME}:${BUILD_NUMBER}"
+                    sh "docker rmi ${IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('Copy Deployment File to Workspace') {
+            steps {
+                script {
+                    sh """
+                        cp /var/lib/jenkins/app-deployment/deployment.yaml .
+                        ls -la  # تأكيد أن الملف نُسخ إلى workspace
+                    """
+                }
+            }
+        }
+
+        stage('Update Deployment File') {
+            steps {
+                script {
+                    def IMAGE_TAG = "${IMAGE_NAME}:${BUILD_NUMBER}"
+                    sh """
+                        sed -i 's|image:.*|image: ${IMAGE_TAG}|' ${DEPLOYMENT_FILE}
+                        cat ${DEPLOYMENT_FILE}  # تأكيد التعديل
+                    """
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+    steps {
+        withCredentials([file(credentialsId: 'kubeconfigg', variable: 'KUBECONFIG')]) {
+            script {
+                def exitCode = sh(
+                    script: '''
+                        kubectl --kubeconfig=$KUBECONFIG apply -f ${DEPLOYMENT_FILE}
+                    ''',
+                    returnStatus: true
+                )
+                if (exitCode != 0) {
+                    error "Kubernetes Deployment Failed!"
+                }
+            }
+        }
+    }
+}
+
+    }
+    post {
+        always {
+            echo "Pipeline Finished - Always Executed"
+        }
+        success {
+            echo "Deployment Successful!"
+        }
+        failure {
+            echo "Deployment Failed!"
+        }
+    }
+}
